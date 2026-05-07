@@ -1,0 +1,36 @@
+# Segredos
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Estado de execução do coletor (local)
+carga_estado.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Vite
+node_modules/
+licidash-web/dist/
+licidash-web/.vite/
+licidash-web/.vercel/
+
+# Vercel
+.vercel/
+
+# Editores / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code (se necessário ignorar localmente)
+.claude/
+.agents/

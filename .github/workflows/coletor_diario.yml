@@ -1,0 +1,31 @@
+name: Agente LiciDash Diário
+
+# Executa todos os dias às 06:00 UTC (03:00 no Brasil)
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  # Permite rodar o workflow manualmente pelo painel do GitHub
+  workflow_dispatch:
+
+jobs:
+  coletar_jurisprudencia:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Instalar Dependências
+        run: pip install -r requirements.txt
+
+      - name: Executar Agente Coletor
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python agente_coletor.py
