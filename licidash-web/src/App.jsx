@@ -181,7 +181,18 @@ function App() {
           ano: acordao.ano,
         }),
       })
-      const data = await resp.json()
+      // O Vercel pode retornar HTML/texto puro em caso de timeout (504) ou crash.
+      // Pegamos o body como texto e tentamos JSON; se falhar, mostramos uma mensagem amigável.
+      const raw = await resp.text()
+      let data
+      try {
+        data = JSON.parse(raw)
+      } catch {
+        if (resp.status === 504 || /timeout/i.test(raw)) {
+          throw new Error('Análise demorou demais (timeout). O modelo pode estar sobrecarregado — tente novamente em alguns segundos.')
+        }
+        throw new Error(`Resposta inesperada do servidor (HTTP ${resp.status}). Tente novamente.`)
+      }
       if (!resp.ok) throw new Error(data.error || `Erro ${resp.status}`)
       setAnalises(prev => ({ ...prev, [acordao.id]: data }))
     } catch (err) {

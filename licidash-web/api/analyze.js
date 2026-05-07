@@ -5,13 +5,16 @@
 import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'crypto';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+// Limpa espaços/aspas/quebras que podem vir de paste sujo no Vercel UI
+const cleanEnv = (v) => (v || '').trim().replace(/^["']|["']$/g, '');
+
+const SUPABASE_URL = cleanEnv(process.env.SUPABASE_URL);
+const SUPABASE_SERVICE_ROLE_KEY = cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY);
+const OPENROUTER_API_KEY = cleanEnv(process.env.OPENROUTER_API_KEY);
 const OPENROUTER_MODEL =
-  process.env.OPENROUTER_MODEL ||
+  cleanEnv(process.env.OPENROUTER_MODEL) ||
   'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
-const SITE_URL = process.env.SITE_URL || 'https://licidash.vercel.app';
+const SITE_URL = cleanEnv(process.env.SITE_URL) || 'https://licidash.vercel.app';
 
 const supabase =
   SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
@@ -23,16 +26,62 @@ function hashTrecho(trecho) {
 }
 
 function extrairJSON(texto) {
-  // Nemotron pode retornar com cercas de markdown. Tira e parseia.
-  const limpo = texto
+  // Nemotron é reasoning model: pode vir com <think>...</think> antes do JSON,
+  // cercas markdown ```json, ou texto livre seguido do objeto.
+  let limpo = texto
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<\|.*?\|>/g, '')
     .replace(/```json/gi, '')
     .replace(/```/g, '')
     .trim();
-  // Pega o primeiro objeto JSON balanceado.
-  const inicio = limpo.indexOf('{');
-  const fim = limpo.lastIndexOf('}');
-  if (inicio === -1 || fim === -1) throw new Error('Sem JSON na resposta');
-  return JSON.parse(limpo.slice(inicio, fim + 1));
+
+  // Tenta parse direto primeiro
+  try {
+    return JSON.parse(limpo);
+  } catch {}
+
+  // Varredura: encontra blocos {...} balanceados e tenta cada um
+  const candidatos = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < limpo.length; i++) {
+    if (limpo[i] === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (limpo[i] === '}') {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        candidatos.push(limpo.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  // Tenta do mais longo pro mais curto (provavelmente o resultado final)
+  candidatos.sort((a, b) => b.length - a.length);
+  for (const c of candidatos) {
+    try {
+      return JSON.parse(c);
+    } catch {}
+  }
+  throw new Error('Sem JSON válido na resposta');
+}
+
+// Aceita aderência em vários formatos: int, string numérica, "85%", "alta"/"média"/"baixa"
+function normalizarAderencia(valor) {
+  if (typeof valor === 'number' && !isNaN(valor)) {
+    return Math.max(0, Math.min(100, Math.round(valor)));
+  }
+  const s = String(valor || '').toLowerCase().trim();
+  const m = s.match(/(\d{1,3})/);
+  if (m) {
+    return Math.max(0, Math.min(100, parseInt(m[1], 10)));
+  }
+  if (/(muito alta|altíssima)/.test(s)) return 90;
+  if (/alta/.test(s)) return 75;
+  if (/(média|media|moderada)/.test(s)) return 55;
+  if (/baixa/.test(s)) return 30;
+  if (/(nenhuma|não|nao se aplica)/.test(s)) return 5;
+  return null; // sinaliza que não conseguiu extrair
 }
 
 export default async function handler(req, res) {
@@ -86,11 +135,15 @@ export default async function handler(req, res) {
           {
             role: 'system',
             content:
-              'Você é analista jurídico especialista em licitações. Avalie em PT-BR a aderência (0-100) entre o trecho da peça e o acórdão do TCU, justificando juridicamente.',
+              'Você é analista jurídico especialista em licitações. Avalie em PT-BR a aderência (0-100) entre o trecho da peça e o acórdão do TCU, justificando juridicamente. Responda DIRETO em JSON, sem explicar o raciocínio antes.',
           },
           { role: 'user', content: prompt },
         ],
         response_format: { type: 'json_object' },
+        // Limita o tempo: free tier do Vercel Hobby aborta em 60s
+        max_tokens: 800,
+        reasoning: { effort: 'low', max_tokens: 1500 },
+        temperature: 0.2,
       }),
     });
   } catch (e) {
@@ -119,12 +172,35 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: `Resposta inválida do Nemotron: ${e.message}` });
   }
 
+  // Aceita variações de nome de chave que o Nemotron costuma improvisar
+  const aderenciaRaw =
+    analise.aderencia_pct ??
+    analise.aderencia ??
+    analise.aderência_pct ??
+    analise.aderência ??
+    analise.score ??
+    analise.match_pct ??
+    analise.match;
+  const aderenciaNorm = normalizarAderencia(aderenciaRaw);
+
+  const justificativa =
+    analise.justificativa ||
+    analise.justificacao ||
+    analise.fundamentacao ||
+    analise.analise ||
+    '';
+
+  const pontos =
+    analise.pontos_chave ||
+    analise.pontos ||
+    analise.principais_pontos ||
+    analise.key_points ||
+    [];
+
   const registro = {
-    aderencia_pct: Math.max(0, Math.min(100, parseInt(analise.aderencia_pct, 10) || 0)),
-    justificativa: String(analise.justificativa || '').slice(0, 2000),
-    pontos_chave: Array.isArray(analise.pontos_chave)
-      ? analise.pontos_chave.map(String).slice(0, 10)
-      : [],
+    aderencia_pct: aderenciaNorm ?? 0,
+    justificativa: String(justificativa).slice(0, 2000),
+    pontos_chave: Array.isArray(pontos) ? pontos.map(String).slice(0, 10) : [],
     gerado_em: new Date().toISOString(),
   };
 
