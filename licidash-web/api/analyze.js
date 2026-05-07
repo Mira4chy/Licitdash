@@ -142,7 +142,7 @@ export default async function handler(req, res) {
         response_format: { type: 'json_object' },
         // Limita o tempo: free tier do Vercel Hobby aborta em 60s
         max_tokens: 800,
-        reasoning: { effort: 'low', max_tokens: 1500 },
+        reasoning: { effort: 'low' },
         temperature: 0.2,
       }),
     });
